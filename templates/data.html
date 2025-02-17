@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Data Collection</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Dane dla pacjenta: {{ patient_id }}</h1>
+    <button onclick="startDataImport()">Rozpocznij import danych</button>
+    <button onclick="stopDataImport()">Zatrzymaj import danych</button>
+    <button onclick="exportPlot()">Eksportuj wykres</button>
+    <p id="sensor_data"></p>
+    <canvas id="sensorChart" width="400" height="200"></canvas>
+    <img id="plotImage" style="display:none;" />
+
+    <script>
+        let chart = null;
+        let chartData = {
+            labels: [],
+            datasets: [{
+                label: 'Sensor Value',
+                data: [],
+                borderColor: 'rgb(75, 192, 192)',
+                fill: false,
+                lineTension: 0.1
+            }]
+        };
+
+        function startDataImport() {
+            fetch(`/start_import_data/{{ patient_id }}`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById("sensor_data").innerText = "Import danych rozpoczęty.";
+                });
+        }
+
+        function stopDataImport() {
+            fetch(`/stop_import_data/{{ patient_id }}`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById("sensor_data").innerText = "Import danych zatrzymany.";
+                });
+        }
+
+        function exportPlot() {
+            const patientId = "{{ patient_id }}";
+            fetch(`/export_plot/${patientId}`)
+                .then(response => response.blob())
+                .then(blob => {
+                    const url = URL.createObjectURL(blob);
+                    const img = document.getElementById("plotImage");
+                    img.src = url;
+                    img.style.display = "block";
+                });
+        }
+
+        function fetchData() {
+            fetch('/get_data')
+                .then(response => response.json())
+                .then(data => {
+                    chartData.labels = data.map(item => item.timestamp);
+                    chartData.datasets[0].data = data.map(item => item.sensor_value);
+                    chart.update();
+                });
+        }
+
+        function initializeChart() {
+            const ctx = document.getElementById('sensorChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'minute',
+                                tooltipFormat: 'll HH:mm'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Timestamp'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Sensor Value'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        window.onload = function() {
+            initializeChart();
+            setInterval(fetchData, 1000); // Fetch data every second
+        };
+    </script>
+</body>
+</html>

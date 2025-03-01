@@ -1,8 +1,11 @@
+import eventlet
+eventlet.monkey_patch()
+
 import io
 import random
-import threading
-from threading import Thread
+from threading import Thread, Lock
 from flask import Flask, request, render_template, jsonify, send_file
+from flask_socketio import SocketIO, emit
 import serial
 import time
 import csv
@@ -13,6 +16,7 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 port = "COM7"  # Change to the correct port
 baudrate = 115200
@@ -25,20 +29,31 @@ except serial.SerialException:
     ser = None  # No real connection
 
 collecting_data = False
-data_thread = None
+data_lock = Lock()
 data = []
+start_time = None
 
 def save_to_csv(timestamp, value, patient_id):
+    global start_time
     filename = f'results/{patient_id}_sensor_data.csv'
     file_exists = os.path.isfile(filename)
 
     os.makedirs('results', exist_ok=True)  # Create the 'results' directory if it doesn't exist
 
-    with open(filename, mode='a', newline='') as file:
-        writer = csv.writer(file)
-        if not file_exists:
-            writer.writerow(['Timestamp', 'Sensor Value'])
-        writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S.%f'), value])
+    if start_time is None:
+        start_time = timestamp
+
+    elapsed_time = (timestamp - start_time).total_seconds()
+
+    try:
+        with open(filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(['Timestamp', 'Sensor Value', 'Elapsed Time (s)'])
+            writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S.%f'), value, elapsed_time])
+    except IOError as e:
+        print(f"Error writing to CSV file: {e}")
+
 
 def get_sensor_value():
     if ser and ser.is_open:
@@ -47,13 +62,14 @@ def get_sensor_value():
     return random.randint(100, 500)
 
 def collect_data(patient_id):
-    global collecting_data, data
+    global collecting_data, data, start_time
     while collecting_data:
         timestamp = datetime.now()
         sensor_value = get_sensor_value()
+        data_point = {"timestamp": timestamp.strftime('%Y-%m-%d %H:%M:%S.%f'), "sensor_value": sensor_value}
+        data.append(data_point)
+        socketio.emit('data', data_point) #
         save_to_csv(timestamp, sensor_value, patient_id)
-        data.append({"timestamp": timestamp.strftime('%H:%M:%S.%f'),
-                     "sensor_value": sensor_value})
         time.sleep(1)
 
 @app.route('/', methods=['GET', 'POST'])
@@ -79,6 +95,7 @@ def stop_import_data(patient_id):
     if data_thread:
         data_thread.join()
     data = []  # Clear the data list
+    start_time = None
     return jsonify({"status": "stopped collecting data"})
 
 @app.route('/get_data')
@@ -88,33 +105,46 @@ def get_data():
 
 @app.route('/export_plot/<patient_id>')
 def export_plot(patient_id):
-    filename = f'results/{patient_id}_sensor_data.csv'
-    if not os.path.isfile(filename):
+    csv_filename = f'results/{patient_id}_sensor_data.csv'
+    plot_filename = f'results_plots/{patient_id}_sensor_data_plot.jpg'
+    if not os.path.isfile(csv_filename):
         return jsonify({"error": "No data available for this patient"}), 404
 
-    timestamps = []
+    elapsed_times = []
     sensor_values = []
-    with open(filename, mode='r') as file:
+    with open(csv_filename, mode='r') as file:
         reader = csv.DictReader(file)
         for row in reader:
-            timestamps.append(datetime.strptime(row['Timestamp'], '%Y-%m-%d %H:%M:%S.%f'))
+            elapsed_times.append(float(row['Elapsed Time (s)']))
             sensor_values.append(int(row['Sensor Value']))
 
-    if not timestamps or not sensor_values:
+    if not elapsed_times or not sensor_values:
         return jsonify({"error": "No data available for this patient"}), 404
 
     plt.figure()
-    plt.plot(timestamps, sensor_values, marker='o')
-    plt.xlabel('Timestamp')
-    plt.ylabel('Sensor Value')
+    plt.plot(elapsed_times, sensor_values, marker='o')
+    plt.xlabel('Time [s]')
+    plt.ylabel('Sensor Value [mV]')
     plt.title(f'Sensor Data for Patient {patient_id}')
     plt.grid(True)
 
+    os.makedirs('results_plots', exist_ok=True)
+
+    plt.savefig(plot_filename, format='jpg')
     img = io.BytesIO()
     plt.savefig(img, format='jpg')
     img.seek(0)
-    plt.close()  # Close the plot to free memory
-    return send_file(img, mimetype='image/jpeg', as_attachment=True, download_name=f'{patient_id}_sensor_data_plot.jpg')
+    plt.close()
+
+    return send_file(plot_filename, as_attachment=True, download_name=f'{patient_id}_sensor_data_plot.jpg')
+
+@app.route('/export_csv/<patient_id>')
+def export_csv(patient_id):
+    filename = f'results/{patient_id}_sensor_data.csv'
+    if not os.path.isfile(filename):
+        return jsonify('{"error": "No data available for this patient"}'), 404
+    return send_file(filename, as_attachment=True, download_name=f'{patient_id}_sensor_data.csv')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    #app.run(debug=True)
+    socketio.run(app, debug=True)

@@ -5,15 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sensor Data Collection</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
+    <style>
+        #sensor_data {
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        #plotImage {
+            max-width: 100%;
+            height: auto;
+            margin-top: 20px;
+        }
+        button {
+            margin: 5px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
 </head>
 <body>
     <h1>Dane dla pacjenta: {{ patient_id }}</h1>
     <button onclick="startDataImport()">Rozpocznij import danych</button>
     <button onclick="stopDataImport()">Zatrzymaj import danych</button>
     <button onclick="exportPlot()">Eksportuj wykres</button>
-    <p id="sensor_data"></p>
+    <button onclick="restart()">Dodaj nowego pacjenta</button>
+    <p id="sensor_data">Status: Nieaktywny</p>
     <canvas id="sensorChart" width="400" height="200"></canvas>
-    <img id="plotImage" style="display:none;" />
+    <img id="plotImage" style="display:none;" alt="Exported Plot"/>
 
     <script>
         let chart = null;
@@ -28,11 +47,27 @@
             }]
         };
 
+        const socket = io('http://localhost:5000');
+
+        socket.on('data', function (data) {
+            chartData.labels.push(data.timestamp);
+            chartData.datasets[0].data.push(data.sensor_value);
+            chart.update();
+        });
+
+        function restart() {
+            window.location.href = "/";
+        }
+
         function startDataImport() {
             fetch(`/start_import_data/{{ patient_id }}`)
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById("sensor_data").innerText = "Import danych rozpoczęty.";
+                    document.getElementById("sensor_data").innerText = "Status: Import danych rozpoczęty.";
+                })
+                .catch(error => {
+                        console.error("Error starting data import:", error);
+                        document.getElementById("sensor_data").innerText = "Status: Błąd podczas rozpoczynania importu danych.";
                 });
         }
 
@@ -40,19 +75,33 @@
             fetch(`/stop_import_data/{{ patient_id }}`)
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById("sensor_data").innerText = "Import danych zatrzymany.";
+                    document.getElementById("sensor_data").innerText = "Status: Import danych zatrzymany.";
+                })
+                .catch(error => {
+                    console.error("Error stopping data import:", error);
+                    document.getElementById("sensor_data").innerText = "Status: Błąd podczas zatrzymywania importu danych.";
                 });
         }
 
         function exportPlot() {
             const patientId = "{{ patient_id }}";
             fetch(`/export_plot/${patientId}`)
-                .then(response => response.blob())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Network response was not ok");
+                    }
+                    return response.blob();
+                })
                 .then(blob => {
                     const url = URL.createObjectURL(blob);
                     const img = document.getElementById("plotImage");
                     img.src = url;
                     img.style.display = "block";
+                    document.getElementById("sensor_data").innerText = "Status: Wykres wyeksportowany.";
+                })
+                .catch(error => {
+                    console.error("Error exporting plot:", error);
+                    document.getElementById("sensor_data").innerText = "Status: Błąd podczas eksportowania wykresu.";
                 });
         }
 
@@ -77,8 +126,8 @@
                         x: {
                             type: 'time',
                             time: {
-                                unit: 'minute',
-                                tooltipFormat: 'll HH:mm'
+                                unit: 'second',
+                                tooltipFormat: 'll HH:mm:ss'
                             },
                             title: {
                                 display: true,

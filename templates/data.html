@@ -6,6 +6,7 @@
     <title>Sensor Data Collection</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.9.4/Chart.js"></script>
     <style>
         #sensor_data {
             font-weight: bold;
@@ -19,8 +20,18 @@
         button {
             margin: 5px;
             padding: 10px 20px;
-            font-size: 16px;
+            font-size: 16px !important;
             cursor: pointer;
+            color: darkgrey;
+        }
+        .chart-container {
+            position: relative;
+            height: 100%;
+            width: 80%;
+        }
+        #sensorChart {
+            width: 100% !important;
+            height: 100% !important;
         }
     </style>
 </head>
@@ -31,26 +42,60 @@
     <button onclick="exportPlot()">Eksportuj wykres</button>
     <button onclick="restart()">Dodaj nowego pacjenta</button>
     <p id="sensor_data">Status: Nieaktywny</p>
-    <canvas id="sensorChart" width="400" height="200"></canvas>
-    <img id="plotImage" style="display:none;" alt="Exported Plot"/>
+    <div class="chart-container">
+        <canvas id="sensorChart"></canvas>
+    </div>
 
     <script>
-        let chart = null;
-        let chartData = {
+        const socket = io('http://localhost:5000');
+        let startTime = null;
+
+        const ctx = document.getElementById('sensorChart').getContext('2d');
+        const chartData = {
             labels: [],
+            name: 'EMG Sensor Data for Patient {{ patient_id }}',
             datasets: [{
-                label: 'Sensor Value',
+                label: 'EMG Sensor Data',
                 data: [],
-                borderColor: 'rgb(75, 192, 192)',
-                fill: false,
-                lineTension: 0.1
+                borderColor: 'rgba(75, 192, 192, 1)',
+                borderWidth: 1,
+                fill: false
             }]
         };
 
-        const socket = io('http://localhost:5000');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: chartData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        position: 'bottom',
+                        ticks: {
+                            callback: function(value, index, values) {
+                                return value.toFixed(3) + 's'; // Display seconds with milliseconds
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Elapsed Time (s)'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
 
         socket.on('data', function (data) {
-            chartData.labels.push(data.timestamp);
+            if (!startTime) {
+                startTime = new Date(data.timestamp).getTime();
+            }
+            const elapsedTime = (new Date(data.timestamp).getTime() - startTime) / 1000;
+            chartData.labels.push(elapsedTime);
             chartData.datasets[0].data.push(data.sensor_value);
             chart.update();
         });
@@ -66,8 +111,8 @@
                     document.getElementById("sensor_data").innerText = "Status: Import danych rozpoczęty.";
                 })
                 .catch(error => {
-                        console.error("Error starting data import:", error);
-                        document.getElementById("sensor_data").innerText = "Status: Błąd podczas rozpoczynania importu danych.";
+                    console.error("Error starting data import:", error);
+                    document.getElementById("sensor_data").innerText = "Status: Błąd podczas rozpoczynania importu danych.";
                 });
         }
 
@@ -76,6 +121,9 @@
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById("sensor_data").innerText = "Status: Import danych zatrzymany.";
+                    chartData.labels.push("");
+                    chartData.datasets[0].data.push(null);
+                    chart.update();
                 })
                 .catch(error => {
                     console.error("Error stopping data import:", error);
@@ -84,71 +132,28 @@
         }
 
         function exportPlot() {
-            const patientId = "{{ patient_id }}";
-            fetch(`/export_plot/${patientId}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error("Network response was not ok");
-                    }
-                    return response.blob();
-                })
-                .then(blob => {
-                    const url = URL.createObjectURL(blob);
-                    const img = document.getElementById("plotImage");
-                    img.src = url;
-                    img.style.display = "block";
-                    document.getElementById("sensor_data").innerText = "Status: Wykres wyeksportowany.";
-                })
-                .catch(error => {
-                    console.error("Error exporting plot:", error);
-                    document.getElementById("sensor_data").innerText = "Status: Błąd podczas eksportowania wykresu.";
-                });
+            const patientId = "{{ patient_id }}"; // Get the patient ID from the template
+            const canvas = document.getElementById('sensorChart');
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempContext = tempCanvas.getContext('2d');
+
+            // Fill the temporary canvas with a white background
+            tempContext.fillStyle = 'white';
+            tempContext.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+            // Draw the original chart onto the temporary canvas
+            tempContext.drawImage(canvas, 0, 0);
+
+            // Create a temporary link to download the image
+            const link = document.createElement('a');
+            link.href = tempCanvas.toDataURL('image/png'); // Convert temporary canvas to PNG
+            link.download = `${patientId}_sensor_plot.png`; // Set the file name
+            link.click(); // Trigger the download
         }
 
-        function fetchData() {
-            fetch('/get_data')
-                .then(response => response.json())
-                .then(data => {
-                    chartData.labels = data.map(item => item.timestamp);
-                    chartData.datasets[0].data = data.map(item => item.sensor_value);
-                    chart.update();
-                });
-        }
-
-        function initializeChart() {
-            const ctx = document.getElementById('sensorChart').getContext('2d');
-            chart = new Chart(ctx, {
-                type: 'line',
-                data: chartData,
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'second',
-                                tooltipFormat: 'll HH:mm:ss'
-                            },
-                            title: {
-                                display: true,
-                                text: 'Timestamp'
-                            }
-                        },
-                        y: {
-                            title: {
-                                display: true,
-                                text: 'Sensor Value'
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        window.onload = function() {
-            initializeChart();
-            setInterval(fetchData, 1000); // Fetch data every second
-        };
     </script>
 </body>
 </html>

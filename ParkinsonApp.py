@@ -11,18 +11,17 @@ import time
 import csv
 import os
 from datetime import datetime
-import matplotlib
-matplotlib.use('Agg')
-from matplotlib import pyplot as plt
+import plotly.graph_objs as go
+import plotly.io as pio
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 port = "COM7"  # Change to the correct port
-baudrate = 115200
+baud_rate = 115200
 
 try:
-    ser = serial.Serial(port, baudrate, timeout=1)
+    ser = serial.Serial(port, baud_rate, timeout=1)
     time.sleep(2)
 except serial.SerialException:
     print("No ESP detected, switching to simulation mode.")
@@ -81,21 +80,21 @@ def index():
 
 @app.route('/start_import_data/<patient_id>')
 def start_import_data(patient_id):
-    global collecting_data, data_thread
+    global collecting_data, data, data_thread, start_time
     if not collecting_data:
         collecting_data = True
+        data = []  # Clear the data list when starting data import
+        start_time = None  # Reset the start time
         data_thread = Thread(target=collect_data, args=(patient_id,))
         data_thread.start()
         return jsonify({"status": "collecting data"})
 
 @app.route('/stop_import_data/<patient_id>')
 def stop_import_data(patient_id):
-    global collecting_data, data
+    global collecting_data
     collecting_data = False
     if data_thread:
         data_thread.join()
-    data = []  # Clear the data list
-    start_time = None
     return jsonify({"status": "stopped collecting data"})
 
 @app.route('/get_data')
@@ -105,46 +104,13 @@ def get_data():
 
 @app.route('/export_plot/<patient_id>')
 def export_plot(patient_id):
-    csv_filename = f'results/{patient_id}_sensor_data.csv'
-    plot_filename = f'results_plots/{patient_id}_sensor_data_plot.jpg'
-    if not os.path.isfile(csv_filename):
-        return jsonify({"error": "No data available for this patient"}), 404
-
-    elapsed_times = []
-    sensor_values = []
-    with open(csv_filename, mode='r') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            elapsed_times.append(float(row['Elapsed Time (s)']))
-            sensor_values.append(int(row['Sensor Value']))
-
-    if not elapsed_times or not sensor_values:
-        return jsonify({"error": "No data available for this patient"}), 404
-
-    plt.figure()
-    plt.plot(elapsed_times, sensor_values, marker='o')
-    plt.xlabel('Time [s]')
-    plt.ylabel('Sensor Value [mV]')
-    plt.title(f'Sensor Data for Patient {patient_id}')
-    plt.grid(True)
-
-    os.makedirs('results_plots', exist_ok=True)
-
-    plt.savefig(plot_filename, format='jpg')
-    img = io.BytesIO()
-    plt.savefig(img, format='jpg')
-    img.seek(0)
-    plt.close()
-
-    return send_file(plot_filename, as_attachment=True, download_name=f'{patient_id}_sensor_data_plot.jpg')
-
-@app.route('/export_csv/<patient_id>')
-def export_csv(patient_id):
-    filename = f'results/{patient_id}_sensor_data.csv'
-    if not os.path.isfile(filename):
-        return jsonify('{"error": "No data available for this patient"}'), 404
-    return send_file(filename, as_attachment=True, download_name=f'{patient_id}_sensor_data.csv')
+    global data
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[d['timestamp'] for d in data], y=[d['sensor_value'] for d in data], mode='lines', name='Sensor Value'))
+    fig.update_layout(title=f'Sensor Data for Patient {patient_id}', xaxis_title='Time', yaxis_title='Sensor Value')
+    filename = f'results/{patient_id}_sensor_data_plot.html'
+    pio.write_html(fig, filename)
+    return send_file(filename, as_attachment=True)
 
 if __name__ == '__main__':
-    #app.run(debug=True)
     socketio.run(app, debug=True)
